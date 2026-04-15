@@ -143,6 +143,17 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
   double _tiltAngle = 0.0;
   StreamSubscription<AccelerometerEvent>? _accelSubscription;
 
+  // ── Sensor Settings ─────────────────────────────────────────────────────────
+  /// When true the left-right (X) axis is inverted so tilting right makes
+  /// the liquid lean left and vice-versa.
+  bool _invertX = false;
+
+  /// When true the forward-back (Y) axis contribution is also inverted.
+  bool _invertY = false;
+
+  /// Sensitivity multiplier: 0.5 = less reactive, 1.0 = default, 2.0 = very sensitive
+  double _sensitivity = 1.0;
+
   // ── Animation Controllers ───────────────────────────────────────────────────
   // Controls the current water LEVEL (0.0 = empty, 1.0 = full)
   late AnimationController _levelController;
@@ -160,8 +171,8 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
   void initState() {
     super.initState();
     _initAnimations();
-    _initAccelerometer();
     _loadPersistedData();
+    _initAccelerometer();
   }
 
   // ── Initialize all AnimationControllers ─────────────────────────────────────
@@ -203,16 +214,18 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
           setState(() {
             // ── TILT MATH ─────────────────────────────────────────────────────
             // Convert X acceleration (-9.8..+9.8 m/s²) to an angle in radians.
-            // When the phone tilts right, X goes positive → water tilts right too.
-            // We clamp to ±45° (±π/4) to avoid extreme distortion.
-            //
-            // Formula: θ = atan2(accelX, accelZ_approx)
-            // Simplified: θ = accelX / 9.8 * (π/2), clamped to [-π/4, π/4]
+            // When the phone tilts right, X goes positive → water tilts right.
+            // _invertX flips the sign so right-tilt makes liquid lean left.
+            // _sensitivity scales the raw angle for more/less reactive response.
+            // We clamp to ±50° (±π/3.6) to avoid extreme distortion.
             //
             // LOW-PASS FILTER: smooth jitter with α = 0.15
             // newAngle = α * rawAngle + (1 - α) * previousAngle
             const double alpha = 0.15;
-            final double rawAngle = (event.x / 9.8) * (math.pi / 3);
+            // Apply X-axis inversion and sensitivity
+            final double xSign = _invertX ? -1.0 : 1.0;
+            final double rawAngle =
+                xSign * (event.x / 9.8) * (math.pi / 3) * _sensitivity;
             _tiltAngle = alpha * rawAngle + (1 - alpha) * _tiltAngle;
             // Clamp to ±50° to prevent extreme visual distortion
             _tiltAngle = _tiltAngle.clamp(-math.pi / 3.6, math.pi / 3.6);
@@ -229,7 +242,7 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
     }
   }
 
-  // ── Persist and Load daily intake ───────────────────────────────────────────
+  // ── Persist and Load daily intake + settings ────────────────────────────────
   Future<void> _loadPersistedData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -244,6 +257,13 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
         await prefs.setString('date', today);
         await prefs.setDouble('totalIntake', 0.0);
       }
+
+      // Load sensor settings
+      setState(() {
+        _invertX = prefs.getBool('invertX') ?? false;
+        _invertY = prefs.getBool('invertY') ?? false;
+        _sensitivity = prefs.getDouble('sensitivity') ?? 1.0;
+      });
     } catch (_) {}
   }
 
@@ -251,6 +271,15 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble('totalIntake', _totalIntakeMl);
+    } catch (_) {}
+  }
+
+  Future<void> _persistSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('invertX', _invertX);
+      await prefs.setBool('invertY', _invertY);
+      await prefs.setDouble('sensitivity', _sensitivity);
     } catch (_) {}
   }
 
@@ -414,6 +443,11 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
                           '${(_tiltAngle * 180 / math.pi).abs().toStringAsFixed(0)}°',
                           style: const TextStyle(color: Colors.blue, fontSize: 12),
                         ),
+                        // Show invert indicator when active
+                        if (_invertX) ...[
+                          const SizedBox(width: 4),
+                          const Icon(Icons.swap_horiz, color: Colors.orangeAccent, size: 13),
+                        ],
                       ],
                     ),
                   );
@@ -443,6 +477,8 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
         return _buildNutritionTab();
       case 3:
         return _buildHistoryTab();
+      case 4:
+        return _buildSettingsTab();
       default:
         return _buildHomeTab();
     }
@@ -1039,6 +1075,463 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TAB 4: SETTINGS - Sensor axis configuration
+  // ─────────────────────────────────────────────────────────────────────────────
+  Widget _buildSettingsTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Header ────────────────────────────────────────────────────────────
+          const Text(
+            'SETTINGS',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 3,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Sensor & display configuration',
+            style: TextStyle(color: Colors.blue.shade300, fontSize: 13),
+          ),
+          const SizedBox(height: 28),
+
+          // ── Section: Sensor Axis ──────────────────────────────────────────────
+          _settingsSectionHeader(
+            icon: Icons.screen_rotation,
+            label: 'SENSOR AXIS',
+          ),
+          const SizedBox(height: 14),
+
+          // Live tilt preview
+          _buildTiltPreview(),
+          const SizedBox(height: 16),
+
+          // Invert Left / Right  (X axis)
+          _buildSettingsCard(
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.orangeAccent.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.swap_horiz,
+                      color: Colors.orangeAccent, size: 22),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Invert Left / Right',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _invertX
+                            ? 'Tilt right → liquid leans LEFT'
+                            : 'Tilt right → liquid leans RIGHT',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.5),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: _invertX,
+                  activeColor: Colors.orangeAccent,
+                  onChanged: (val) {
+                    setState(() => _invertX = val);
+                    _persistSettings();
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+
+          // Invert Front / Back  (Y axis)
+          _buildSettingsCard(
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.purpleAccent.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.swap_vert,
+                      color: Colors.purpleAccent, size: 22),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Invert Front / Back',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _invertY
+                            ? 'Y-axis: inverted'
+                            : 'Y-axis: default',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.5),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: _invertY,
+                  activeColor: Colors.purpleAccent,
+                  onChanged: (val) {
+                    setState(() => _invertY = val);
+                    _persistSettings();
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 28),
+
+          // ── Section: Sensitivity ──────────────────────────────────────────────
+          _settingsSectionHeader(
+            icon: Icons.tune,
+            label: 'TILT SENSITIVITY',
+          ),
+          const SizedBox(height: 14),
+
+          _buildSettingsCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.cyanAccent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.speed,
+                          color: Colors.cyanAccent, size: 22),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Sensor Sensitivity',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _sensitivityLabel(_sensitivity),
+                            style: TextStyle(
+                              color: Colors.cyanAccent.withValues(alpha: 0.8),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      '${(_sensitivity * 100).round()}%',
+                      style: const TextStyle(
+                        color: Colors.cyanAccent,
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                SliderTheme(
+                  data: SliderThemeData(
+                    activeTrackColor: Colors.cyanAccent,
+                    inactiveTrackColor: Colors.white.withValues(alpha: 0.12),
+                    thumbColor: Colors.cyanAccent,
+                    overlayColor: Colors.cyanAccent.withValues(alpha: 0.15),
+                    trackHeight: 4,
+                  ),
+                  child: Slider(
+                    min: 0.25,
+                    max: 2.0,
+                    divisions: 7,
+                    value: _sensitivity,
+                    onChanged: (val) {
+                      setState(() => _sensitivity = val);
+                    },
+                    onChangeEnd: (_) => _persistSettings(),
+                  ),
+                ),
+                // Labels
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Low',
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.4),
+                              fontSize: 11)),
+                      Text('Default',
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.4),
+                              fontSize: 11)),
+                      Text('High',
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.4),
+                              fontSize: 11)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 28),
+
+          // ── Reset settings ────────────────────────────────────────────────────
+          _settingsSectionHeader(
+            icon: Icons.restart_alt,
+            label: 'RESET',
+          ),
+          const SizedBox(height: 14),
+          _buildSettingsCard(
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.settings_backup_restore,
+                      color: Colors.redAccent, size: 22),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Reset Sensor Defaults',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        'Restore axis & sensitivity to factory defaults',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.45),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                TextButton(
+                  onPressed: _resetSensorSettings,
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.redAccent,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      side: const BorderSide(color: Colors.redAccent),
+                    ),
+                  ),
+                  child: const Text('Reset', fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 32),
+
+          // ── Info footer ───────────────────────────────────────────────────────
+          Center(
+            child: Text(
+              'Aqua Tilt v1.0 · Sensor settings are saved automatically',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.25),
+                fontSize: 11,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  /// Live tilt angle preview card shown in Settings
+  Widget _buildTiltPreview() {
+    return _buildSettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.sensors, color: Colors.blue, size: 18),
+              const SizedBox(width: 8),
+              const Text(
+                'Live Tilt Preview',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  letterSpacing: 1,
+                ),
+              ),
+              const Spacer(),
+              AnimatedBuilder(
+                animation: _waveController,
+                builder: (_, __) => Text(
+                  '${(_tiltAngle * 180 / math.pi).toStringAsFixed(1)}°  '
+                  '${_tiltAngle >= 0 ? "→ Right" : "← Left"}',
+                  style: const TextStyle(
+                    color: Colors.blue,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          AnimatedBuilder(
+            animation: _waveController,
+            builder: (_, __) {
+              return SizedBox(
+                height: 100,
+                child: Center(
+                  child: CustomPaint(
+                    size: const Size(160, 90),
+                    painter: GlassPainter(
+                      fillLevel: 0.55,
+                      tiltAngle: _tiltAngle,
+                      wavePhase: _waveController.value * 2 * math.pi,
+                      liquidColor: const Color(0xFF29B6F6),
+                      liquidSurfaceColor: const Color(0xFF4FC3F7),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 4),
+          Center(
+            child: Text(
+              'Tilt your device to see the effect',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.35),
+                fontSize: 11,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Helper: settings section header ─────────────────────────────────────────
+  Widget _settingsSectionHeader({
+    required IconData icon,
+    required String label,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, color: Colors.blue.shade300, size: 16),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.blue.shade300,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 2,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Helper: settings card container ─────────────────────────────────────────
+  Widget _buildSettingsCard({required Widget child}) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: child,
+    );
+  }
+
+  // ── Helper: human-readable sensitivity label ─────────────────────────────────
+  String _sensitivityLabel(double v) {
+    if (v <= 0.4) return 'Very low — barely reacts to tilting';
+    if (v <= 0.7) return 'Low — subtle tilt response';
+    if (v <= 1.1) return 'Default — natural tilt response';
+    if (v <= 1.5) return 'High — very reactive to tilting';
+    return 'Maximum — extreme tilt response';
+  }
+
+  // ── Reset sensor settings to defaults ───────────────────────────────────────
+  void _resetSensorSettings() {
+    setState(() {
+      _invertX = false;
+      _invertY = false;
+      _sensitivity = 1.0;
+    });
+    _persistSettings();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Row(
+          children: [
+            Icon(Icons.check_circle_outline, color: Colors.white, size: 18),
+            SizedBox(width: 10),
+            Text('Sensor settings reset to defaults'),
+          ],
+        ),
+        backgroundColor: const Color(0xFF1A3A6B),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   // ── BOTTOM NAVIGATION BAR ───────────────────────────────────────────────────
   Widget _buildBottomNav() {
     final tabs = [
@@ -1046,6 +1539,7 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
       {'icon': Icons.add_circle, 'label': 'Add'},
       {'icon': Icons.bar_chart, 'label': 'Nutrition'},
       {'icon': Icons.history, 'label': 'History'},
+      {'icon': Icons.settings, 'label': 'Settings'},
     ];
 
     return Container(
@@ -1062,28 +1556,50 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
           final int index = entry.key;
           final map = entry.value;
           final bool isActive = _selectedTab == index;
+          // Highlight Settings tab with a dot when axis is inverted
+          final bool hasInvertBadge =
+              index == 4 && (_invertX || _invertY);
           return GestureDetector(
             onTap: () => setState(() => _selectedTab = index),
             behavior: HitTestBehavior.opaque,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: isActive
-                          ? const Color(0xFF29B6F6).withValues(alpha: 0.15)
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(
-                      map['icon'] as IconData,
-                      color: isActive ? const Color(0xFF29B6F6) : Colors.white38,
-                      size: 24,
-                    ),
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: isActive
+                              ? const Color(0xFF29B6F6).withValues(alpha: 0.15)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          map['icon'] as IconData,
+                          color: isActive ? const Color(0xFF29B6F6) : Colors.white38,
+                          size: 24,
+                        ),
+                      ),
+                      // Badge dot when an axis inversion is active
+                      if (hasInvertBadge)
+                        Positioned(
+                          top: -2,
+                          right: -2,
+                          child: Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Colors.orangeAccent,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 2),
                   Text(
