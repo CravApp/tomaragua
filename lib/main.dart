@@ -1369,7 +1369,7 @@ class _WaterTrackerScreenState extends State<WaterTrackerScreen>
                       side: const BorderSide(color: Colors.redAccent),
                     ),
                   ),
-                  child: const Text('Reset', fontWeight: FontWeight.bold),
+                  child: const Text('Reset', style: TextStyle(fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
