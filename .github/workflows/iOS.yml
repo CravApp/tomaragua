@@ -2,7 +2,7 @@ name: Flutter iOS Build (IPA)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "iOS" ]
   workflow_dispatch: # Allows you to trigger the workflow manually from the GitHub Actions tab
 
 jobs:
