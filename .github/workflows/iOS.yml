@@ -1,0 +1,61 @@
+name: Flutter iOS Build (IPA)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # Allows you to trigger the workflow manually from the GitHub Actions tab
+
+jobs:
+  build-ios:
+    name: Build iOS IPA
+    runs-on: macos-latest
+    
+    steps:
+      # 1. Checkout the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Setup Flutter environment
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          # flutter-version: '3.24.0' # Uncomment and modify to lock to a specific version
+
+      # 3. Get project dependencies
+      - name: Install dependencies
+        run: flutter pub get
+
+      # 4. Build the iOS app without code signing
+      # (Using --no-codesign bypasses the Apple Developer certificate requirements)
+      - name: Build iOS app (Unsigned)
+        run: flutter build ios --release --no-codesign
+
+      # 5. Convert the raw .app into an .ipa file
+      # An IPA is essentially just a zipped 'Payload' folder containing the app
+      - name: Package into IPA
+        run: |
+          mkdir -p build/ios/ipa
+          cd build/ios/iphoneos
+          mkdir Payload
+          cp -r Runner.app Payload
+          zip -qq -r ../ipa/app-unsigned.ipa Payload
+          cd ../../..
+          
+      # ----------------------------------------------------------------------
+      # SIGNED BUILD INSTRUCTIONS (For TestFlight / App Store Distribution)
+      # If you have an Apple Developer account, comment out Steps 4 and 5,
+      # and use the command below instead. You will also need to add prior steps 
+      # to decode your base64 provisioning profiles and .p12 certificates.
+      # 
+      # - name: Build Signed IPA
+      #   run: flutter build ipa --release --export-options-plist=ios/ExportOptions.plist
+      # ----------------------------------------------------------------------
+
+      # 6. Upload the IPA as a downloadable artifact
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-ipa
+          path: build/ios/ipa/*.ipa
+          retention-days: 14 # Artifact stays available for 14 days before expiring
